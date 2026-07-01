@@ -1,6 +1,6 @@
 # AI Support Ticket Triage Engine
 
-An asynchronous customer support classification, prioritization, and response drafting microservice built with Rails 8, Sidekiq, and OpenAI.
+Headless backend service for AI-based support ticket classification and response generation
 
 [![Rails Version](https://img.shields.io/badge/Rails-8.1-red.svg)](https://rubyonrails.org)
 [![Ruby Version](https://img.shields.io/badge/Ruby-3.4.1-blue.svg)](https://www.ruby-lang.org)
@@ -12,10 +12,10 @@ An asynchronous customer support classification, prioritization, and response dr
 ## 1. Executive Summary
 
 ### The Problem
-SaaS support teams are overwhelmed by raw ticket volume. Manual categorization and routing are slow, error-prone, and expensive. This causes delayed replies to urgent issues (e.g., billing errors or system downtime).
+Customer support teams are overwhelmed by ticket volume. Manual categorization and routing are slow, error-prone, and expensive. This increases the manual support workload and delays responses to critical technical or billing issues.
 
 ### The Solution
-A production-grade, API-only microservice that ingests unclassified support tickets, queues them in Redis, and asynchronously triages them using LLMs. The engine outputs structured classification, urgency rating, summary, and a suggested draft response.
+An API-only backend service designed to automate ticket triage. By offloading classification, prioritization, and response drafting to background processing, the system lowers the support workload and guarantees fast, structured updates.
 
 ---
 
@@ -46,7 +46,7 @@ A production-grade, API-only microservice that ingests unclassified support tick
 ```
 
 ### Components
-* **Ingestion Layer (`ActionController::API`)**: Validates input and writes raw tickets to Postgres with a `pending` status. Immediately responds with `202 Accepted` (< 5ms response time).
+* **Ingestion Layer (`ActionController::API`)**: Validates input and writes raw tickets to Postgres in a `pending` state, immediately returning `202 Accepted` (< 5ms response time).
 * **Worker Queue (`Sidekiq + Redis`)**: Isolates slow LLM API calls from web threads.
 * **AI Service Layer (`Ai::TriageService`)**: Implements strict structured output templates via OpenAI's API.
 * **Database (`PostgreSQL`)**: Uses UUID primary keys for secure, non-sequential identifiers. Stores raw payloads, metadata, state tracking, and final classifications.
@@ -169,4 +169,3 @@ bundle exec rails server -p 3000
 ## 7. Future Roadmap
 * **Webhook dispatch**: Deliver processed ticket states back to configured client callback URLs immediately after classification.
 * **LLM Provider fallback**: Implement automatic failover routing to Anthropic Claude if OpenAI rate limits or times out.
-* **Multi-tenant isolation**: Support multi-client database scoping (Account/Organization levels).
