@@ -1,0 +1,20 @@
+# Read about fixtures at https://api.rubyonrails.org/classes/ActiveRecord/FixtureSet.html
+
+one:
+  customer_email: customer1@example.com
+  subject: Subject One
+  body: This is the body of the ticket.
+  status: pending
+  metadata: {}
+
+two:
+  customer_email: customer2@example.com
+  subject: Subject Two
+  body: This is another body of the ticket.
+  status: completed
+  category: billing
+  urgency: high
+  summary: Problem with billing.
+  suggested_reply: We will refund your amount.
+  metadata: { "source": "web" }
+
