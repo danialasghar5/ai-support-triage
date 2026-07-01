@@ -1,5 +1,7 @@
 class TicketTriageJob < ApplicationJob
   queue_as :default
+  sidekiq_options retry: 3
+
 
   def perform(ticket_id)
     ticket = Ticket.find(ticket_id)

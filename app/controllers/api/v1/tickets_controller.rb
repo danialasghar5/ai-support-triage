@@ -1,5 +1,7 @@
 class Api::V1::TicketsController < ActionController::API
+  before_action :authenticate_request!
   before_action :set_ticket, only: [:show]
+
 
   # POST /api/v1/tickets
   def create
@@ -39,6 +41,15 @@ class Api::V1::TicketsController < ActionController::API
 
   private
 
+  def authenticate_request!
+    token = request.headers["Authorization"]&.split(" ")&.last
+    expected_token = ENV.fetch("API_AUTH_TOKEN", "triage-mvp-token")
+
+    if token != expected_token
+      render json: { error: "Unauthorized" }, status: :unauthorized
+    end
+  end
+
   def set_ticket
     @ticket = Ticket.find(params[:id])
   rescue ActiveRecord::RecordNotFound
@@ -52,3 +63,4 @@ class Api::V1::TicketsController < ActionController::API
     end
   end
 end
+
