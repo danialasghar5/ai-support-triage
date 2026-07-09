@@ -44,3 +44,8 @@ group :development, :test do
   # Omakase Ruby styling [https://github.com/rails/rubocop-rails-omakase/]
   gem "rubocop-rails-omakase", require: false
 end
+
+group :test do
+  # Stub and set expectations on outbound HTTP for OpenAI contract tests.
+  gem "webmock", require: false
+end

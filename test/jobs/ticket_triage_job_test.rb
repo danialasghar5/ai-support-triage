@@ -22,6 +22,35 @@ class TicketTriageJobTest < ActiveJob::TestCase
     end
   end
 
+  test "should configure Sidekiq to retry three times" do
+    # Sidekiq is the retry authority; this proves the wiring is in place.
+    assert_equal 3, TicketTriageJob.get_sidekiq_options["retry"]
+  end
+
+  test "should re-claim and re-raise on each transient attempt, then complete on recovery" do
+    ticket = tickets(:one)
+
+    # Model Sidekiq's retry loop: a persistent transient failure re-raises every
+    # attempt (handing the retry decision back to Sidekiq) and leaves the ticket
+    # in a re-claimable failed state.
+    failing = proc { raise Ai::TriageService::TransientError.new("rate limited") }
+    stub_service_call(failing) do
+      3.times do
+        assert_raises(Ai::TriageService::TransientError) { TicketTriageJob.perform_now(ticket.id) }
+        assert ticket.reload.failed?
+      end
+    end
+
+    # A later attempt (after the transient condition clears) recovers the ticket.
+    recovered = { category: "billing", urgency: "low", summary: "s", suggested_reply: "r" }
+    stub_service_call(recovered) do
+      TicketTriageJob.perform_now(ticket.id)
+    end
+
+    assert ticket.reload.completed?
+    assert_nil ticket.error_message
+  end
+
   test "should successfully triage and update ticket attributes" do
     ticket = tickets(:one)
     assert ticket.pending?

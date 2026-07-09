@@ -4,6 +4,11 @@ ENV["RAILS_ENV"] ||= "test"
 ENV["API_AUTH_TOKEN"] ||= "test-triage-token"
 require_relative "../config/environment"
 require "rails/test_help"
+require "webmock/minitest"
+
+# No test may reach the network. HTTP to OpenAI must be explicitly stubbed;
+# localhost is allowed so DB/driver traffic is unaffected.
+WebMock.disable_net_connect!(allow_localhost: true)
 
 module ActiveSupport
   class TestCase

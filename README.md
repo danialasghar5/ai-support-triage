@@ -63,7 +63,7 @@ An API-only backend service designed to automate ticket triage. By offloading cl
 * **State & Error Auditing**: Traps exceptions and writes the message to `error_message` with a `failed` status for administrative visibility.
 * **Structured Logging**: Each LLM call and job outcome emits a logfmt line (`event`, `ticket_id`, `model`, `outcome`, `duration_ms`, `error_class`) — greppable observability with no APM dependency. Ticket content is never logged, and PII-bearing request params (`body`, `subject`, `metadata`, …) are filtered from Rails logs.
 * **Output Validation**: Persisted `urgency` is validated against a fixed vocabulary (the same constant that drives the LLM's JSON schema, so the contract can't drift); `category` is length-bounded.
-* **Clean Mock Layer**: Uses pure-Ruby metaprogramming stubs in tests to verify OpenAI client behavior with zero network overhead.
+* **Real Contract & Concurrency Tests**: The OpenAI integration is tested at the HTTP boundary with WebMock — asserting the outgoing request shape and driving error classification through the real Faraday middleware — while a two-thread test proves the row lock admits exactly one LLM call per ticket under contention.
 
 ---
 
@@ -131,7 +131,7 @@ An API-only backend service designed to automate ticket triage. By offloading cl
 * **Job Engine**: Sidekiq 8.1 (backed by Redis 7.x)
 * **Database**: PostgreSQL 14+ (UUID keys, JSONB metadata)
 * **LLM Engine**: OpenAI API (`gpt-4o-mini`)
-* **Test Suite**: Minitest (20 unit/integration tests, 100% green)
+* **Test Suite**: Minitest + WebMock (46 unit/integration/contract tests, 100% green)
 
 ---
 

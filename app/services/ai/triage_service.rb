@@ -18,6 +18,10 @@ module Ai
       Faraday::ConnectionFailed      # DNS / connection reset
     ].freeze
 
+    # Keys the LLM must return. Drives both the JSON schema's `required` array
+    # and the post-parse guard, so the contract can't drift.
+    REQUIRED_FIELDS = %i[category urgency summary suggested_reply].freeze
+
     DEFAULT_MODEL = "gpt-4o-mini".freeze
 
     def self.call(ticket)
@@ -129,7 +133,7 @@ module Ai
                 description: "A professional, draft response addressing the user's issue directly, prompting for next steps if needed"
               }
             },
-            required: [ "category", "urgency", "summary", "suggested_reply" ],
+            required: REQUIRED_FIELDS.map(&:to_s),
             additionalProperties: false
           }
         }
@@ -149,7 +153,14 @@ module Ai
       content = message && message["content"]
       raise PermanentError, "Empty response from AI model" if content.blank?
 
-      JSON.parse(content).symbolize_keys
+      parsed = JSON.parse(content).symbolize_keys
+
+      # Reject incomplete output rather than persisting a ticket with null
+      # classification fields. Won't succeed on retry, so it is permanent.
+      missing = REQUIRED_FIELDS.select { |key| parsed[key].blank? }
+      raise PermanentError, "Missing required fields from AI model: #{missing.join(', ')}" if missing.any?
+
+      parsed
     rescue JSON::ParserError => e
       raise PermanentError, "Malformed JSON from AI model: #{e.message}"
     end
