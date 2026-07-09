@@ -68,8 +68,9 @@ sequenceDiagram
 ### D. Service Layer (AI Client Integration)
 * **Design Pattern**: Service Object (`TicketTriageService` or `Ai::TriageService`).
 * **Responsibility**: Encapsulates all prompt engineering, system instructions, and LLM communication.
-* **LLM Strategy**: Use Structured Outputs (e.g., JSON Mode or tool calling) to guarantee the LLM returns parsing-safe JSON matching our database attributes.
-* **Resilience**: Configured timeouts (e.g., Faraday or HTTP clients set to 15s max) to prevent hanging threads.
+* **LLM Strategy**: Use Structured Outputs (JSON schema) to keep responses parsing-safe. The `urgency` enum is driven by `Ticket::URGENCIES`, the same constant that validates the value on write, so the model contract and the DB validation cannot drift.
+* **Resilience**: A 15s request timeout (`config/initializers/openai.rb`) prevents hanging worker threads.
+* **Observability**: Each LLM call and job outcome emits a structured logfmt line (`event`, `ticket_id`, `model`, `outcome`, `duration_ms`, `error_class`). Logging is intentionally lightweight — no APM/tracing stack. Ticket content is never logged, and PII-bearing request parameters are filtered from Rails logs.
 
 ---
 

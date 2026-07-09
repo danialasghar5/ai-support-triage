@@ -59,8 +59,10 @@ An API-only backend service designed to automate ticket triage. By offloading cl
 * **Asynchronous Isolation**: Offloads external LLM API latencies (1-10s) from critical Puma web threads.
 * **Idempotent Ingestion**: A unique index on `external_id` means re-delivering the same ticket returns the original record instead of creating a duplicate (and a duplicate LLM call).
 * **Concurrency-Safe Processing**: Workers claim a ticket via a database row lock (`SELECT … FOR UPDATE`) before calling the LLM, so two concurrent workers can never trigger two triage calls for the same ticket.
-* **Bounded Retries**: Configured `sidekiq_options retry: 3` with exponential backoff. Caps API spend on transient failures.
+* **Bounded, Classified Retries**: `sidekiq_options retry: 3` with exponential backoff. Transient failures (rate limit, 5xx, timeout) retry; permanent ones (4xx, auth, refusal, malformed output) fail fast. Caps API spend on failures that cannot succeed.
 * **State & Error Auditing**: Traps exceptions and writes the message to `error_message` with a `failed` status for administrative visibility.
+* **Structured Logging**: Each LLM call and job outcome emits a logfmt line (`event`, `ticket_id`, `model`, `outcome`, `duration_ms`, `error_class`) — greppable observability with no APM dependency. Ticket content is never logged, and PII-bearing request params (`body`, `subject`, `metadata`, …) are filtered from Rails logs.
+* **Output Validation**: Persisted `urgency` is validated against a fixed vocabulary (the same constant that drives the LLM's JSON schema, so the contract can't drift); `category` is length-bounded.
 * **Clean Mock Layer**: Uses pure-Ruby metaprogramming stubs in tests to verify OpenAI client behavior with zero network overhead.
 
 ---

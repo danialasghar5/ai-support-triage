@@ -26,6 +26,25 @@ class TicketTest < ActiveSupport::TestCase
     assert_includes ticket.errors[:body], "can't be blank"
   end
 
+  test "should accept every urgency in the known vocabulary" do
+    Ticket::URGENCIES.each do |urgency|
+      ticket = Ticket.new(customer_email: "user@example.com", body: "help", urgency: urgency)
+      assert ticket.valid?, "expected urgency #{urgency.inspect} to be valid"
+    end
+  end
+
+  test "should reject an urgency outside the known vocabulary" do
+    ticket = Ticket.new(customer_email: "user@example.com", body: "help", urgency: "catastrophic")
+    assert_not ticket.valid?
+    assert_includes ticket.errors[:urgency], "is not included in the list"
+  end
+
+  test "should reject an absurdly long category" do
+    ticket = Ticket.new(customer_email: "user@example.com", body: "help", category: "x" * 51)
+    assert_not ticket.valid?
+    assert_includes ticket.errors[:category], "is too long (maximum is 50 characters)"
+  end
+
   test "should support status transitions using enum helper methods" do
     ticket = Ticket.create!(customer_email: "user@example.com", body: "Help, my app is down!")
     assert ticket.pending?

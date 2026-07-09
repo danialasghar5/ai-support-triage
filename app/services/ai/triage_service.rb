@@ -31,6 +31,8 @@ module Ai
     end
 
     def call
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
       response = @client.chat(
         parameters: {
           model: @model,
@@ -40,21 +42,52 @@ module Ai
         }
       )
 
-      handle_response(response)
-    rescue Error
-      # Already classified by handle_response; don't re-wrap and lose the type.
-      raise
-    rescue *RETRYABLE_ERRORS => e
-      raise TransientError, "AI Triage failed (transient): #{e.message}"
-    rescue Faraday::ClientError, OpenAI::Error => e
-      # Remaining 4xx (400/401/403/422) and OpenAI auth/config errors.
-      raise PermanentError, "AI Triage failed (permanent): #{e.message}"
+      result = handle_response(response)
+      log_event("ai_triage.request", outcome: "success", duration_ms: elapsed_ms(started_at))
+      result
     rescue => e
-      # Unknown failure. Prefer a bounded retry over dropping the ticket.
-      raise TransientError, "AI Triage failed (unexpected): #{e.message}"
+      # One classification + one log point for every failure, so even a 15s
+      # timeout records its duration and error type before re-raising.
+      classified = classify(e)
+      log_event(
+        "ai_triage.request",
+        outcome: "error",
+        error_class: classified.class.name,
+        retryable: classified.is_a?(TransientError),
+        duration_ms: elapsed_ms(started_at)
+      )
+      raise classified
     end
 
     private
+
+    # Map a raw exception onto a TransientError/PermanentError. Already-classified
+    # errors (raised by handle_response) pass through untouched.
+    def classify(error)
+      case error
+      when Error
+        error
+      when *RETRYABLE_ERRORS
+        TransientError.new("AI Triage failed (transient): #{error.message}")
+      when Faraday::ClientError, OpenAI::Error
+        # Remaining 4xx (400/401/403/422) and OpenAI auth/config errors.
+        PermanentError.new("AI Triage failed (permanent): #{error.message}")
+      else
+        # Unknown failure. Prefer a bounded retry over dropping the ticket.
+        TransientError.new("AI Triage failed (unexpected): #{error.message}")
+      end
+    end
+
+    def elapsed_ms(started_at)
+      ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at) * 1000).round
+    end
+
+    # Structured (logfmt) line. Never logs ticket content, only identifiers and
+    # metrics, so PII stays out of the logs.
+    def log_event(event, **fields)
+      pairs = { event: event, ticket_id: @ticket.id, model: @model }.merge(fields)
+      Rails.logger.info(pairs.map { |k, v| "#{k}=#{v}" }.join(" "))
+    end
 
     def messages
       [
@@ -84,7 +117,7 @@ module Ai
               },
               urgency: {
                 type: "string",
-                enum: [ "low", "medium", "high", "urgent" ],
+                enum: Ticket::URGENCIES,
                 description: "The urgency of the ticket based on customer sentiment and urgency of the issue"
               },
               summary: {

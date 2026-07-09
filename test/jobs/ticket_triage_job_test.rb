@@ -112,6 +112,35 @@ class TicketTriageJobTest < ActiveJob::TestCase
     assert_not called, "AI service should not have been called for completed tickets"
   end
 
+  test "should log a structured completed line on success" do
+    ticket = tickets(:one)
+    result = { category: "billing", urgency: "low", summary: "s", suggested_reply: "r" }
+
+    logs = capture_logs do
+      stub_service_call(result) do
+        TicketTriageJob.perform_now(ticket.id)
+      end
+    end
+
+    assert_match(/event=ticket_triage\.completed/, logs)
+    assert_match(/ticket_id=#{ticket.id}/, logs)
+  end
+
+  test "should log a structured failed line with retryable flag on a permanent error" do
+    ticket = tickets(:one)
+    error_proc = proc { raise Ai::TriageService::PermanentError.new("bad key") }
+
+    logs = capture_logs do
+      stub_service_call(error_proc) do
+        TicketTriageJob.perform_now(ticket.id)
+      end
+    end
+
+    assert_match(/event=ticket_triage\.failed/, logs)
+    assert_match(/error_class=Ai::TriageService::PermanentError/, logs)
+    assert_match(/retryable=false/, logs)
+  end
+
   test "should not call AI service when the ticket is already being processed by another worker" do
     ticket = tickets(:one)
     ticket.processing! # Simulate a concurrent worker having claimed the ticket.

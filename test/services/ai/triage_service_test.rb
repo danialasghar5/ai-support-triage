@@ -74,6 +74,49 @@ class Ai::TriageServiceTest < ActiveSupport::TestCase
     assert_equal "json_schema", call_args.dig(:response_format, :type)
   end
 
+  test "should drive the urgency schema enum from Ticket::URGENCIES" do
+    mock_client = MockOpenAiClient.new(openai_response(category: "billing", urgency: "low", summary: "s", suggested_reply: "r"))
+
+    stub_openai_client(mock_client) do
+      Ai::TriageService.call(tickets(:one))
+    end
+
+    enum = mock_client.calls.first.dig(:response_format, :json_schema, :schema, :properties, :urgency, :enum)
+    assert_equal Ticket::URGENCIES, enum
+  end
+
+  test "should log a structured success line with timing and no ticket content" do
+    ticket = tickets(:one)
+    mock_client = MockOpenAiClient.new(openai_response(category: "billing", urgency: "low", summary: "secret summary", suggested_reply: "r"))
+
+    logs = capture_logs do
+      stub_openai_client(mock_client) do
+        Ai::TriageService.call(ticket)
+      end
+    end
+
+    assert_match(/event=ai_triage\.request/, logs)
+    assert_match(/outcome=success/, logs)
+    assert_match(/ticket_id=#{ticket.id}/, logs)
+    assert_match(/duration_ms=\d+/, logs)
+    assert_no_match(/secret summary/, logs) # never log ticket content
+  end
+
+  test "should log a structured error line with the classified error class" do
+    ticket = tickets(:one)
+    mock_client = MockOpenAiClient.new(Faraday::TooManyRequestsError.new("429"))
+
+    logs = capture_logs do
+      stub_openai_client(mock_client) do
+        assert_raises(Ai::TriageService::TransientError) { Ai::TriageService.call(ticket) }
+      end
+    end
+
+    assert_match(/outcome=error/, logs)
+    assert_match(/error_class=Ai::TriageService::TransientError/, logs)
+    assert_match(/retryable=true/, logs)
+  end
+
   test "should raise custom error when OpenAI client encounters an error response" do
     ticket = tickets(:one)
     mock_error_response = {

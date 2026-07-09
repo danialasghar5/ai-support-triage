@@ -13,6 +13,16 @@ module ActiveSupport
     # Setup all fixtures in test/fixtures/*.yml for all tests in alphabetical order.
     fixtures :all
 
-    # Add more helper methods to be used by all tests here...
+    # Capture everything written to Rails.logger during the block and return it
+    # as a string, so tests can assert on structured log output.
+    def capture_logs
+      io = StringIO.new
+      original = Rails.logger
+      Rails.logger = ActiveSupport::Logger.new(io)
+      yield
+      io.string
+    ensure
+      Rails.logger = original
+    end
   end
 end
