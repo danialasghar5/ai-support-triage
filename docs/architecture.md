@@ -73,7 +73,14 @@ sequenceDiagram
 
 ---
 
-## 3. Scale & Production Considerations (Future Proofing)
-1. **Authentication**: Simple API key auth (`Bearer token`) per client.
+## 3. Reliability Patterns (Implemented)
+
+* **Authentication**: A single shared `Bearer` token, supplied via `API_AUTH_TOKEN`. The server **fails closed** (returns `503`) when the variable is unset, and compares tokens in constant time. Per-client keys are a future enhancement.
+* **Idempotent Ingestion**: A unique index on `external_id` guarantees one ticket per external identifier. Re-delivering the same payload returns the original record instead of creating a duplicate.
+* **Concurrency-Safe Processing**: The triage job claims a ticket via a row-level lock (`SELECT … FOR UPDATE`), transitioning `pending`/`failed → processing` atomically. The lock is released before the LLM call, so a second worker that arrives while the first is mid-flight sees `processing` and backs off — at most one LLM call per ticket.
+
+## 4. Scale & Production Considerations (Future Proofing)
+
+1. **Per-client authentication**: Issue and rotate a distinct API key per client rather than one shared token.
 2. **Webhooks**: Dispatch a webhook back to the client system once the ticket state changes to `completed` or `failed`.
-3. **Idempotency**: Prevent duplicate processing via `external_id` or unique request tokens.
+3. **Stuck-worker recovery**: A ticket left in `processing` by a crashed worker is currently not auto-reclaimed; a lease/heartbeat with a reclaim window would close this gap.

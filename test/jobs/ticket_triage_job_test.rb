@@ -53,7 +53,7 @@ class TicketTriageJobTest < ActiveJob::TestCase
 
     # Stub the AI service to raise an error
     error_proc = proc { raise Ai::TriageService::Error.new("API Timeout") }
-    
+
     stub_service_call(error_proc) do
       assert_raises(Ai::TriageService::Error) do
         TicketTriageJob.perform_now(ticket.id)
@@ -77,5 +77,39 @@ class TicketTriageJobTest < ActiveJob::TestCase
     end
 
     assert_not called, "AI service should not have been called for completed tickets"
+  end
+
+  test "should not call AI service when the ticket is already being processed by another worker" do
+    ticket = tickets(:one)
+    ticket.processing! # Simulate a concurrent worker having claimed the ticket.
+
+    called = false
+    track_proc = proc { called = true }
+
+    stub_service_call(track_proc) do
+      TicketTriageJob.perform_now(ticket.id)
+    end
+
+    assert_not called, "A second worker must not trigger a duplicate LLM call"
+    assert ticket.reload.processing?
+  end
+
+  test "should reprocess a previously failed ticket on retry" do
+    ticket = tickets(:one)
+    ticket.failed!
+
+    mock_triage_result = {
+      category: "billing",
+      urgency: "low",
+      summary: "Recovered on retry.",
+      suggested_reply: "Resolved."
+    }
+
+    stub_service_call(mock_triage_result) do
+      TicketTriageJob.perform_now(ticket.id)
+    end
+
+    assert ticket.reload.completed?
+    assert_nil ticket.error_message
   end
 end

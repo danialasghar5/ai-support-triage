@@ -5,7 +5,7 @@ class Api::V1::TicketsTest < ActionDispatch::IntegrationTest
   include ActiveJob::TestHelper
 
   def auth_headers
-    { "Authorization" => "Bearer triage-mvp-token" }
+    { "Authorization" => "Bearer #{ENV['API_AUTH_TOKEN']}" }
   end
 
   test "should return unauthorized when auth header is missing or invalid" do
@@ -18,6 +18,56 @@ class Api::V1::TicketsTest < ActionDispatch::IntegrationTest
 
     get api_v1_ticket_path(tickets(:two)), as: :json
     assert_response :unauthorized
+  end
+
+  test "should fail closed with service unavailable when server token is not configured" do
+    original = ENV.delete("API_AUTH_TOKEN")
+
+    # Even a well-formed request must be rejected when the server has no secret.
+    get api_v1_ticket_path(tickets(:two)), headers: { "Authorization" => "Bearer anything" }, as: :json
+    assert_response :service_unavailable
+    assert_equal "Server authentication is not configured", JSON.parse(response.body)["error"]
+  ensure
+    ENV["API_AUTH_TOKEN"] = original
+  end
+
+  test "should be idempotent on external_id, returning the existing ticket without a second job" do
+    payload = {
+      ticket: {
+        customer_email: "dupe@example.com",
+        subject: "Duplicate delivery",
+        body: "Same webhook delivered twice.",
+        external_id: "ext-dup-1"
+      }
+    }
+
+    assert_difference -> { Ticket.count }, 1 do
+      assert_enqueued_jobs 1, only: TicketTriageJob do
+        post api_v1_tickets_path, params: payload, headers: auth_headers, as: :json
+      end
+    end
+    assert_response :accepted
+    first_id = JSON.parse(response.body)["ticket_id"]
+
+    # Re-delivery: no new row, no new job, and the original ticket_id is returned.
+    assert_no_difference -> { Ticket.count } do
+      assert_no_enqueued_jobs only: TicketTriageJob do
+        post api_v1_tickets_path, params: payload, headers: auth_headers, as: :json
+      end
+    end
+    assert_response :ok
+    body = JSON.parse(response.body)
+    assert_equal first_id, body["ticket_id"]
+    assert_equal "Ticket already exists.", body["message"]
+  end
+
+  test "should allow multiple tickets without an external_id" do
+    2.times do |i|
+      post api_v1_tickets_path, params: {
+        ticket: { customer_email: "no-ext-#{i}@example.com", body: "help" }
+      }, headers: auth_headers, as: :json
+      assert_response :accepted
+    end
   end
 
   test "should create ticket and enqueue triage job when parameters are valid and authenticated" do
@@ -79,4 +129,3 @@ class Api::V1::TicketsTest < ActionDispatch::IntegrationTest
     assert_equal "Ticket not found", json_response["error"]
   end
 end
-

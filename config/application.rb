@@ -17,6 +17,11 @@ module AiSupportTriage
     config.autoload_lib(ignore: %w[assets tasks])
 
     # Configuration for the application, engines, and railties goes here.
+
+    # This is a headless, API-only service. Skips the middleware and modules
+    # (cookies, sessions, flash, view rendering) that a browser-facing app needs.
+    config.api_only = true
+
     config.active_job.queue_adapter = :sidekiq
 
     #

@@ -10,7 +10,7 @@ This guide details how to verify the AI Support Ticket Triage System locally usi
 Make sure you have your OpenAI API key exported, along with the API Auth token if you want to override the default:
 ```bash
 export OPENAI_API_KEY="your-actual-openai-api-key"
-export API_AUTH_TOKEN="triage-mvp-token" # Optional, defaults to this in development
+export API_AUTH_TOKEN="triage-mvp-token" # Required: the API fails closed (503) if unset
 ```
 
 ### B. Start Background Services

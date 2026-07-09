@@ -40,4 +40,3 @@ class TicketTest < ActiveSupport::TestCase
     assert ticket.failed?
   end
 end
-

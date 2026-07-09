@@ -1,11 +1,18 @@
 class Api::V1::TicketsController < ActionController::API
   before_action :authenticate_request!
-  before_action :set_ticket, only: [:show]
-
+  before_action :set_ticket, only: [ :show ]
 
   # POST /api/v1/tickets
+  #
+  # Ingestion is idempotent on external_id: re-delivering the same ticket
+  # returns the original record instead of creating a duplicate (and a
+  # duplicate triage job).
   def create
     ticket = Ticket.new(ticket_params)
+
+    if ticket.external_id.present? && (existing = Ticket.find_by(external_id: ticket.external_id))
+      return render_existing(existing)
+    end
 
     if ticket.save
       TicketTriageJob.perform_later(ticket.id)
@@ -19,6 +26,10 @@ class Api::V1::TicketsController < ActionController::API
         errors: ticket.errors.full_messages
       }, status: :unprocessable_entity
     end
+  rescue ActiveRecord::RecordNotUnique
+    # Lost the race with a concurrent, identical ingestion. The unique index
+    # guarantees exactly one row exists; return it.
+    render_existing(Ticket.find_by!(external_id: ticket.external_id))
   end
 
   # GET /api/v1/tickets/:id
@@ -42,10 +53,16 @@ class Api::V1::TicketsController < ActionController::API
   private
 
   def authenticate_request!
-    token = request.headers["Authorization"]&.split(" ")&.last
-    expected_token = ENV.fetch("API_AUTH_TOKEN", "triage-mvp-token")
+    expected_token = ENV["API_AUTH_TOKEN"]
 
-    if token != expected_token
+    # Fail closed: an unconfigured server must never accept requests.
+    if expected_token.blank?
+      return render json: { error: "Server authentication is not configured" }, status: :service_unavailable
+    end
+
+    token = request.headers["Authorization"]&.split(" ")&.last
+
+    unless token.present? && ActiveSupport::SecurityUtils.secure_compare(token, expected_token)
       render json: { error: "Unauthorized" }, status: :unauthorized
     end
   end
@@ -56,6 +73,14 @@ class Api::V1::TicketsController < ActionController::API
     render json: { error: "Ticket not found" }, status: :not_found
   end
 
+  def render_existing(ticket)
+    render json: {
+      ticket_id: ticket.id,
+      status: ticket.status,
+      message: "Ticket already exists."
+    }, status: :ok
+  end
+
   def ticket_params
     # Permitting metadata as a hash
     params.require(:ticket).permit(:customer_email, :subject, :body, :external_id).tap do |whitelisted|
@@ -63,4 +88,3 @@ class Api::V1::TicketsController < ActionController::API
     end
   end
 end
-

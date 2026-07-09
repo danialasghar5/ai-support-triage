@@ -46,7 +46,7 @@ An API-only backend service designed to automate ticket triage. By offloading cl
 ```
 
 ### Components
-* **Ingestion Layer (`ActionController::API`)**: Validates input and writes raw tickets to Postgres in a `pending` state, immediately returning `202 Accepted` (< 5ms response time).
+* **Ingestion Layer (`ActionController::API`)**: Validates input and writes raw tickets to Postgres in a `pending` state, immediately returning `202 Accepted` without waiting on the LLM.
 * **Worker Queue (`Sidekiq + Redis`)**: Isolates slow LLM API calls from web threads.
 * **AI Service Layer (`Ai::TriageService`)**: Implements strict structured output templates via OpenAI's API.
 * **Database (`PostgreSQL`)**: Uses UUID primary keys for secure, non-sequential identifiers. Stores raw payloads, metadata, state tracking, and final classifications.
@@ -55,11 +55,12 @@ An API-only backend service designed to automate ticket triage. By offloading cl
 
 ## 3. Engineering Decisions & Reliability Patterns
 
-* **Strict Structured JSON Outputs**: Leverages OpenAI's `json_schema` response format to guarantee LLM payloads match our DB schema. Eliminates parsing failures.
+* **Strict Structured JSON Outputs**: Leverages OpenAI's `json_schema` response format so LLM payloads conform to our DB schema.
 * **Asynchronous Isolation**: Offloads external LLM API latencies (1-10s) from critical Puma web threads.
-* **Idempotency Gate**: Workers skip classification if the target ticket status is already `completed`.
-* **Bounded Retries**: Configured `sidekiq_options retry: 3` with exponential backoff. Prevents runaway API billing.
-* **State & Error Auditing**: Traps exceptions and writes the stack trace/message to `error_message` with a `failed` status for administrative visibility.
+* **Idempotent Ingestion**: A unique index on `external_id` means re-delivering the same ticket returns the original record instead of creating a duplicate (and a duplicate LLM call).
+* **Concurrency-Safe Processing**: Workers claim a ticket via a database row lock (`SELECT … FOR UPDATE`) before calling the LLM, so two concurrent workers can never trigger two triage calls for the same ticket.
+* **Bounded Retries**: Configured `sidekiq_options retry: 3` with exponential backoff. Caps API spend on transient failures.
+* **State & Error Auditing**: Traps exceptions and writes the message to `error_message` with a `failed` status for administrative visibility.
 * **Clean Mock Layer**: Uses pure-Ruby metaprogramming stubs in tests to verify OpenAI client behavior with zero network overhead.
 
 ---
@@ -128,7 +129,7 @@ An API-only backend service designed to automate ticket triage. By offloading cl
 * **Job Engine**: Sidekiq 8.1 (backed by Redis 7.x)
 * **Database**: PostgreSQL 14+ (UUID keys, JSONB metadata)
 * **LLM Engine**: OpenAI API (`gpt-4o-mini`)
-* **Test Suite**: Minitest (15 unit/integration tests, 100% green)
+* **Test Suite**: Minitest (20 unit/integration tests, 100% green)
 
 ---
 

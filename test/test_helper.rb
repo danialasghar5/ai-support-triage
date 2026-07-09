@@ -1,4 +1,7 @@
 ENV["RAILS_ENV"] ||= "test"
+# The app fails closed when API_AUTH_TOKEN is unset; the suite needs a configured
+# secret to exercise authenticated paths.
+ENV["API_AUTH_TOKEN"] ||= "test-triage-token"
 require_relative "../config/environment"
 require "rails/test_help"
 

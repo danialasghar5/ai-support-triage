@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_01_123321) do
+ActiveRecord::Schema[8.1].define(version: 2026_07_09_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pgcrypto"
@@ -29,7 +29,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_01_123321) do
     t.text "summary"
     t.datetime "updated_at", null: false
     t.string "urgency"
-    t.index ["external_id"], name: "index_tickets_on_external_id"
+    t.index ["external_id"], name: "index_tickets_on_external_id", unique: true
     t.index ["status"], name: "index_tickets_on_status"
   end
 end

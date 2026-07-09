@@ -22,4 +22,3 @@ class CreateTickets < ActiveRecord::Migration[8.1]
     add_index :tickets, :status
   end
 end
-

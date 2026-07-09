@@ -59,7 +59,7 @@ module Ai
               },
               urgency: {
                 type: "string",
-                enum: ["low", "medium", "high", "urgent"],
+                enum: [ "low", "medium", "high", "urgent" ],
                 description: "The urgency of the ticket based on customer sentiment and urgency of the issue"
               },
               summary: {
@@ -71,7 +71,7 @@ module Ai
                 description: "A professional, draft response addressing the user's issue directly, prompting for next steps if needed"
               }
             },
-            required: ["category", "urgency", "summary", "suggested_reply"],
+            required: [ "category", "urgency", "summary", "suggested_reply" ],
             additionalProperties: false
           }
         }
