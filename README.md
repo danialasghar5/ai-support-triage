@@ -141,7 +141,7 @@ An API-only backend service designed to automate ticket triage. By offloading cl
 Create a `.env` file or export your credentials:
 ```bash
 export OPENAI_API_KEY="your-openai-api-key"
-export API_AUTH_TOKEN="triage-mvp-token" # Token validation key
+export API_AUTH_TOKEN="choose-a-strong-token" # Required: the API fails closed (503) if unset
 export REDIS_URL="redis://localhost:6379/1"
 ```
 
@@ -152,7 +152,7 @@ bin/rails db:setup
 ```
 
 ### 3. Run Test Suite
-Executes isolated tests utilizing local mock stubs (no external API calls):
+Runs fully offline — outbound HTTP is disabled and the OpenAI API is stubbed at the HTTP boundary with WebMock:
 ```bash
 bundle exec rails test
 ```
@@ -169,6 +169,33 @@ bundle exec rails server -p 3000
 
 ---
 
-## 7. Future Roadmap
+## 7. Testing & Proven Reliability
+
+The suite is layered (model, API integration, service HTTP contract, job, concurrency) and runs offline. It **proves**, not just exercises:
+
+* **Idempotent ingestion** — a duplicate `external_id` creates no second row and no second job.
+* **Exactly one LLM call under concurrent workers** — a two-thread test contends for one ticket; it is validated to *fail* if the row lock is removed, so it isn't a tautology.
+* **Error classification through the real Faraday middleware** (WebMock) — 429/5xx/timeout retry; 4xx/auth/refusal/malformed fail fast.
+* **Incomplete or malformed LLM output is rejected**, never persisted.
+
+Deliberately out of scope: Sidekiq's live Dead-Set/attempt-counting (asserted at config + contract level, not via a Redis integration test) and LLM output *accuracy*. See [architecture §5](docs/architecture.md).
+
+---
+
+## 8. Limitations & Trade-offs
+
+Stated plainly (full detail in [architecture §6](docs/architecture.md)):
+
+* A worker killed mid-flight leaves its ticket in `processing`; there is no lease/reclaim yet.
+* Permanent failures are recorded on the ticket (`failed` + `error_message`) and **not** placed in Sidekiq's Dead Set — the ticket row is the failure source of truth.
+* Auth is a single shared token (fail-closed), not per-client.
+* `category` is open (length-bounded only); `urgency` is validated against a fixed set.
+* The system guarantees a **schema-valid, complete** response is persisted — not that the classification is *accurate*.
+
+---
+
+## 9. Future Roadmap
 * **Webhook dispatch**: Deliver processed ticket states back to configured client callback URLs immediately after classification.
-* **LLM Provider fallback**: Implement automatic failover routing to Anthropic Claude if OpenAI rate limits or times out.
+* **Stuck-worker recovery**: A lease/heartbeat with a reclaim window for tickets abandoned in `processing`.
+* **Per-client authentication**: Distinct, rotatable API keys per client.
+* **LLM Provider fallback**: Automatic failover to an alternate provider (e.g., Anthropic Claude) on sustained OpenAI errors.
