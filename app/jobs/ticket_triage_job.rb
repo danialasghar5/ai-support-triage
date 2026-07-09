@@ -19,11 +19,17 @@ class TicketTriageJob < ApplicationJob
       suggested_reply: triage_results[:suggested_reply],
       status: :completed
     )
-  rescue => e
-    # Persist the failure details for internal triage / dashboard monitoring.
+  rescue ActiveRecord::RecordNotFound
+    # Ticket was deleted before we could process it. Nothing to record or retry.
+    nil
+  rescue Ai::TriageService::PermanentError => e
+    # Terminal failure (bad request, auth, refusal). Record and swallow so
+    # Sidekiq does not retry — a retry cannot succeed.
     ticket&.update(status: :failed, error_message: e.message)
-
-    # Re-raise to trigger Sidekiq's retry framework.
+  rescue => e
+    # Transient or unexpected failure. Record, then re-raise so Sidekiq retries
+    # per sidekiq_options. Sidekiq remains the only retry authority.
+    ticket&.update(status: :failed, error_message: e.message)
     raise e
   end
 

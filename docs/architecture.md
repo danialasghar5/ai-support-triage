@@ -62,8 +62,8 @@ sequenceDiagram
 ### C. Background Job Layer (Sidekiq + Redis)
 * **Technology**: Sidekiq using Redis.
 * **Why**: High-throughput, low latency, standard Rails pattern. Replaces default Rails 8 `solid_queue` for this production path to ensure highly scalable background workers.
-* **Retry Strategy**: Sidekiq default exponential backoff, configured with a limit (e.g., 3 retries) to avoid racking up LLM billing during transient API failures.
-* **Error Handling**: Captures network timeouts and rate limits, saving details into `error_message` while letting Sidekiq handle the retry.
+* **Retry Strategy**: Sidekiq is the single retry authority (`sidekiq_options retry: 3`, exponential backoff). Errors are classified in the service layer: **transient** failures (rate limits, 5xx, timeouts, connection resets) are re-raised so Sidekiq retries; **permanent** failures (4xx, auth, model refusal, malformed output) are recorded and swallowed so no retry is attempted. This caps LLM spend on failures that cannot succeed.
+* **Error Handling**: Every failure records its message to `error_message` with a `failed` status. A ticket deleted before processing is skipped without a retry.
 
 ### D. Service Layer (AI Client Integration)
 * **Design Pattern**: Service Object (`TicketTriageService` or `Ai::TriageService`).

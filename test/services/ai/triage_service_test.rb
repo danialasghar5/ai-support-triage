@@ -11,8 +11,17 @@ class Ai::TriageServiceTest < ActiveSupport::TestCase
 
     def chat(parameters:)
       @calls << parameters
+      # If configured with an exception, raise it to simulate the ruby-openai
+      # client surfacing a typed Faraday/OpenAI error.
+      raise @response if @response.is_a?(Exception)
+
       @response
     end
+  end
+
+  # Wrap a JSON-string content payload in the OpenAI chat response shape.
+  def openai_response(content_hash)
+    { "choices" => [ { "message" => { "content" => content_hash.to_json } } ] }
   end
 
   # A simple pure-Ruby stub helper for OpenAI::Client.new
@@ -76,8 +85,84 @@ class Ai::TriageServiceTest < ActiveSupport::TestCase
     mock_client = MockOpenAiClient.new(mock_error_response)
 
     stub_openai_client(mock_client) do
-      assert_raises(Ai::TriageService::Error, "AI Triage failed: Rate limit exceeded") do
+      assert_raises(Ai::TriageService::Error) do
         Ai::TriageService.call(ticket)
+      end
+    end
+  end
+
+  # --- Error classification -------------------------------------------------
+
+  RETRYABLE_CASES = {
+    "rate limit (429)" => Faraday::TooManyRequestsError.new("429 Too Many Requests"),
+    "server error (5xx)" => Faraday::ServerError.new("503 Service Unavailable"),
+    "timeout" => Faraday::TimeoutError.new("execution expired"),
+    "connection failure" => Faraday::ConnectionFailed.new("connection refused")
+  }.freeze
+
+  PERMANENT_CASES = {
+    "bad request (400)" => Faraday::BadRequestError.new("400 Bad Request"),
+    "unauthorized (401)" => Faraday::UnauthorizedError.new("401 Unauthorized"),
+    "openai auth error" => OpenAI::AuthenticationError.new("invalid api key")
+  }.freeze
+
+  RETRYABLE_CASES.each do |label, error|
+    test "should classify #{label} as a TransientError" do
+      mock_client = MockOpenAiClient.new(error)
+      stub_openai_client(mock_client) do
+        assert_raises(Ai::TriageService::TransientError) do
+          Ai::TriageService.call(tickets(:one))
+        end
+      end
+    end
+  end
+
+  PERMANENT_CASES.each do |label, error|
+    test "should classify #{label} as a PermanentError" do
+      mock_client = MockOpenAiClient.new(error)
+      stub_openai_client(mock_client) do
+        assert_raises(Ai::TriageService::PermanentError) do
+          Ai::TriageService.call(tickets(:one))
+        end
+      end
+    end
+  end
+
+  test "should classify an unexpected error as a TransientError" do
+    mock_client = MockOpenAiClient.new(RuntimeError.new("something odd"))
+    stub_openai_client(mock_client) do
+      assert_raises(Ai::TriageService::TransientError) do
+        Ai::TriageService.call(tickets(:one))
+      end
+    end
+  end
+
+  test "should raise PermanentError when the model refuses the request" do
+    refusal = { "choices" => [ { "message" => { "refusal" => "I can't help with that." } } ] }
+    mock_client = MockOpenAiClient.new(refusal)
+    stub_openai_client(mock_client) do
+      assert_raises(Ai::TriageService::PermanentError) do
+        Ai::TriageService.call(tickets(:one))
+      end
+    end
+  end
+
+  test "should raise PermanentError when the model returns empty content" do
+    empty = { "choices" => [ { "message" => { "content" => "" } } ] }
+    mock_client = MockOpenAiClient.new(empty)
+    stub_openai_client(mock_client) do
+      assert_raises(Ai::TriageService::PermanentError) do
+        Ai::TriageService.call(tickets(:one))
+      end
+    end
+  end
+
+  test "should raise PermanentError when the model returns malformed JSON" do
+    malformed = { "choices" => [ { "message" => { "content" => "{not json" } } ] }
+    mock_client = MockOpenAiClient.new(malformed)
+    stub_openai_client(mock_client) do
+      assert_raises(Ai::TriageService::PermanentError) do
+        Ai::TriageService.call(tickets(:one))
       end
     end
   end

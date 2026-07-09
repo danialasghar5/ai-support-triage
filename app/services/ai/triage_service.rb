@@ -1,6 +1,22 @@
 module Ai
   class TriageService
+    # Base error. Subclasses tell the caller whether a retry is worthwhile:
+    #   TransientError -> re-raise so Sidekiq retries (rate limit, 5xx, timeout)
+    #   PermanentError -> record and stop; a retry cannot succeed (4xx, auth,
+    #                     model refusal, malformed output)
     class Error < StandardError; end
+    class TransientError < Error; end
+    class PermanentError < Error; end
+
+    # HTTP failures surface as typed Faraday exceptions (ruby-openai mounts the
+    # :raise_error middleware). Note the ordering constraints these encode:
+    # TooManyRequestsError is a ClientError, so it must be matched before the
+    # 4xx bucket; TimeoutError is a ServerError, so it is covered here for free.
+    RETRYABLE_ERRORS = [
+      Faraday::TooManyRequestsError, # 429
+      Faraday::ServerError,          # 5xx (includes Faraday::TimeoutError)
+      Faraday::ConnectionFailed      # DNS / connection reset
+    ].freeze
 
     DEFAULT_MODEL = "gpt-4o-mini".freeze
 
@@ -25,8 +41,17 @@ module Ai
       )
 
       handle_response(response)
+    rescue Error
+      # Already classified by handle_response; don't re-wrap and lose the type.
+      raise
+    rescue *RETRYABLE_ERRORS => e
+      raise TransientError, "AI Triage failed (transient): #{e.message}"
+    rescue Faraday::ClientError, OpenAI::Error => e
+      # Remaining 4xx (400/401/403/422) and OpenAI auth/config errors.
+      raise PermanentError, "AI Triage failed (permanent): #{e.message}"
     rescue => e
-      raise Error, "AI Triage failed: #{e.message}"
+      # Unknown failure. Prefer a bounded retry over dropping the ticket.
+      raise TransientError, "AI Triage failed (unexpected): #{e.message}"
     end
 
     private
@@ -79,14 +104,21 @@ module Ai
     end
 
     def handle_response(response)
-      if response["error"]
-        raise Error, response.dig("error", "message")
-      end
+      # A 200 response carrying an error body (rare; most API errors raise a
+      # Faraday::Error first). Cause is ambiguous here, so treat as transient.
+      raise TransientError, response.dig("error", "message") if response["error"]
 
-      choice = response.dig("choices", 0, "message", "content")
-      raise Error, "Empty response from AI model" if choice.blank?
+      message = response.dig("choices", 0, "message")
 
-      JSON.parse(choice).symbolize_keys
+      # A structured-output refusal or empty content won't change on retry.
+      raise PermanentError, "AI model refused the request: #{message['refusal']}" if message && message["refusal"].present?
+
+      content = message && message["content"]
+      raise PermanentError, "Empty response from AI model" if content.blank?
+
+      JSON.parse(content).symbolize_keys
+    rescue JSON::ParserError => e
+      raise PermanentError, "Malformed JSON from AI model: #{e.message}"
     end
   end
 end

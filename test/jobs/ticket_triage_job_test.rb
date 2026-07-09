@@ -47,22 +47,55 @@ class TicketTriageJobTest < ActiveJob::TestCase
     assert_nil ticket.error_message
   end
 
-  test "should save error message and mark ticket as failed if AI service raises an error" do
+  test "should mark ticket failed and re-raise on a transient error so Sidekiq retries" do
     ticket = tickets(:one)
     assert ticket.pending?
 
-    # Stub the AI service to raise an error
-    error_proc = proc { raise Ai::TriageService::Error.new("API Timeout") }
+    error_proc = proc { raise Ai::TriageService::TransientError.new("Rate limited") }
 
     stub_service_call(error_proc) do
-      assert_raises(Ai::TriageService::Error) do
+      # Re-raising is how the job hands the retry decision to Sidekiq.
+      assert_raises(Ai::TriageService::TransientError) do
         TicketTriageJob.perform_now(ticket.id)
       end
     end
 
     ticket.reload
     assert ticket.failed?
-    assert_equal "API Timeout", ticket.error_message
+    assert_equal "Rate limited", ticket.error_message
+  end
+
+  test "should mark ticket failed WITHOUT re-raising on a permanent error (no retry)" do
+    ticket = tickets(:one)
+    assert ticket.pending?
+
+    error_proc = proc { raise Ai::TriageService::PermanentError.new("Invalid API key") }
+
+    # Swallow-and-record: the job must not raise, so Sidekiq will not retry.
+    stub_service_call(error_proc) do
+      assert_nothing_raised do
+        TicketTriageJob.perform_now(ticket.id)
+      end
+    end
+
+    ticket.reload
+    assert ticket.failed?
+    assert_equal "Invalid API key", ticket.error_message
+  end
+
+  test "should not raise or retry when the ticket no longer exists" do
+    missing_id = SecureRandom.uuid
+
+    called = false
+    track_proc = proc { called = true }
+
+    stub_service_call(track_proc) do
+      assert_nothing_raised do
+        TicketTriageJob.perform_now(missing_id)
+      end
+    end
+
+    assert_not called, "AI service should not be called for a missing ticket"
   end
 
   test "should return early without calling AI service if ticket is already completed" do
