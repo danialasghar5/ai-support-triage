@@ -117,6 +117,7 @@ module Ai
             properties: {
               category: {
                 type: "string",
+                maxLength: 50,
                 description: "The category of the ticket (e.g., technical, billing, sales, feedback, account, general)"
               },
               urgency: {

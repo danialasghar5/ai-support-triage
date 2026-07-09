@@ -112,6 +112,31 @@ class TicketTriageJobTest < ActiveJob::TestCase
     assert_equal "Invalid API key", ticket.error_message
   end
 
+  test "should fail the ticket (not strand it in processing) when the completion write is invalid" do
+    ticket = tickets(:one)
+    assert ticket.pending?
+
+    # An over-length category passes the LLM schema's open vocabulary but fails
+    # the DB length validation on the completion write.
+    invalid_result = { category: "a" * 60, urgency: "low", summary: "s", suggested_reply: "r" }
+
+    stub_service_call(invalid_result) do
+      # Treated as a permanent failure: recorded, not re-raised, so no retry.
+      assert_nothing_raised do
+        TicketTriageJob.perform_now(ticket.id)
+      end
+    end
+
+    ticket.reload
+    assert ticket.failed?, "ticket must not be stranded in processing"
+    assert_not ticket.processing?
+    assert ticket.error_message.present?, "failure reason must be persisted"
+
+    # A subsequent Sidekiq retry would find `failed` and reprocess — never a
+    # silent skip of a stuck `processing` ticket.
+    assert_not ticket.processing?
+  end
+
   test "should not raise or retry when the ticket no longer exists" do
     missing_id = SecureRandom.uuid
 
