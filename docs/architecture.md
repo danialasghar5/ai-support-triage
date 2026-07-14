@@ -23,7 +23,7 @@ sequenceDiagram
     API-->>Client: 202 Accepted { ticket_id: UUID, status: "pending" }
 
     Note over Worker, Redis: Sidekiq picks up job from queue
-    Worker->>DB: Claim ticket via row lock (pending/failed -> processing)
+    Worker->>DB: Claim ticket via row lock (pending/failed -> processing, stamp claimed_at)
     Note over Worker, DB: If already processing/completed, skip (no LLM call)
 
     Worker->>LLM: Send ticket context & system instructions
@@ -31,6 +31,7 @@ sequenceDiagram
 
     Worker->>DB: Update Ticket with classifications & status: "completed"
     Note over Worker, DB: On failure, mark status: "failed" and record error_message
+    Note over Worker, DB: If a worker crashes mid-flight, the ticket is stranded in processing;<br/>ReclaimStaleTicketsJob resets it to pending past claimed_at + timeout and re-enqueues
 ```
 
 ---
@@ -52,6 +53,7 @@ sequenceDiagram
   * `subject`: `string` (nullable)
   * `body`: `text` (required)
   * `status`: `string` (enum: `pending`, `processing`, `completed`, `failed`; indexed)
+  * `claimed_at`: `datetime` (nullable; set when a worker claims the ticket, so the reaper can detect one stranded in `processing`)
   * `category`: `string` (nullable; length-bounded to 50 — the schema keeps the vocabulary open)
   * `urgency`: `string` (nullable; validated against `Ticket::URGENCIES` = `low`, `medium`, `high`, `urgent`)
   * `summary`: `text` (nullable)
@@ -90,8 +92,9 @@ Failures are classified in `Ai::TriageService` and acted on in `TicketTriageJob`
 | Unknown / unexpected error | Transient (default) | record, re-raise | Yes | `failed` → recovers |
 | Ticket deleted before processing | `RecordNotFound` | skip | No | (row gone) |
 | Duplicate concurrent worker | — | skip via row lock | n/a | unchanged (no second LLM call) |
+| Worker crash mid-`processing` | — | reaper reclaims | re-enqueued | `processing` → `pending`, then reprocessed |
 
-On every retry the ticket is re-claimed (`pending`/`failed → processing`) and reprocessed. On the terminal outcome the ticket is either `completed` or `failed` with the last `error_message`.
+On every retry the ticket is re-claimed (`pending`/`failed → processing`) and reprocessed. On the terminal outcome the ticket is either `completed` or `failed` with the last `error_message`. A worker that crashes after claiming leaves the ticket in `processing`; `ReclaimStaleTicketsJob` resets it to `pending` once `claimed_at` is older than `CLAIM_TIMEOUT` (default 5 min) and re-enqueues triage — a self-crash of the claim mechanism is not left stranded.
 
 ---
 
@@ -100,6 +103,7 @@ On every retry the ticket is re-claimed (`pending`/`failed → processing`) and 
 * **Sidekiq is the single retry authority.** Active Job's `retry_on` and Sidekiq's `sidekiq_options retry:` both count attempts; using both splits the policy across two frameworks and double-counts. We keep one authority — Sidekiq — and express "do not retry" simply by **not re-raising**. Backoff and the Dead Set therefore behave predictably.
 * **Postgres row locking for idempotency and concurrency (not Redis/Redlock/outbox).** The database is already the transactional source of truth. A `SELECT … FOR UPDATE` claim gives correct single-flight semantics with zero additional infrastructure and none of the failure modes of distributed locks. The lock is held only for the fast state transition, never across the LLM call. Redlock, an outbox, or a streaming bus would add operational surface for a guarantee Postgres already provides.
 * **Idempotent ingestion via a unique index.** Deduplication is enforced at the one layer that can do it atomically — the database. The controller returns the existing record on a duplicate `external_id` and rescues the concurrent-insert race.
+* **Crash recovery is a visibility timeout, not a lease heartbeat.** A worker that claims a ticket and then crashes strands it in `processing` (open-source Sidekiq has no reliable-fetch, so the in-flight job is lost). `ReclaimStaleTicketsJob` resets tickets whose `claimed_at` is older than `CLAIM_TIMEOUT` back to `pending` and **re-enqueues** triage — resetting state alone would leave a ticket with no job to run it. The reset is a per-row guarded update (keyed on still-`processing` + still-stale), so a ticket that completes mid-sweep is never clobbered. Being a visibility timeout, it can also resurrect a merely-hung worker; the at-most-once claim + unique index — not the timeout — are what keep a resurrected ticket triaged only once, so `CLAIM_TIMEOUT` is set comfortably beyond the LLM timeout × retries. Scheduling is left to the deployment (`bin/rails tickets:reclaim_stale`); no scheduler gem is added.
 * **Fail-closed shared-token auth.** An unconfigured server rejects every request (`503`) rather than falling back to a default; tokens are compared in constant time. A single shared token is a deliberate MVP scope; per-client keys are future work.
 * **WebMock contract tests over full client stubbing.** Stubbing the whole OpenAI client hid the real request shape and the Faraday `:raise_error` middleware that error classification depends on. WebMock exercises the true HTTP boundary: the outgoing request body is asserted against our schema, and real HTTP status codes drive classification — so the tests validate the contract, not our own mock.
 * **Observability scope and non-goals.** Structured logfmt lines (keyed by `ticket_id`, with request timing) give greppable visibility without an APM stack. This is intentional: the ticket row is the source of truth for outcomes. Non-goals for now: distributed tracing, a metrics pipeline, and per-request correlation IDs across the API → job boundary.
@@ -111,8 +115,9 @@ On every retry the ticket is re-claimed (`pending`/`failed → processing`) and 
 The suite is layered: model validations, API integration tests, service HTTP-contract tests (WebMock), job-behavior tests, and a real two-thread concurrency test.
 
 **Proven by the suite:**
-* Idempotent ingestion — a duplicate `external_id` creates no second row and enqueues no second job.
+* Idempotent ingestion — a duplicate `external_id` creates no second row and enqueues no second job. A separate two-thread test proves the **database** adjudicates the race (exactly one insert wins, the other raises `RecordNotUnique`), and the controller's rescue path returns the existing ticket with `200` rather than a 500 or a duplicate.
 * **Exactly one LLM call under concurrent workers** — two threads contend for one ticket and only one triage call is made. The test is validated to *fail* if the row lock is removed, so it is not a tautology.
+* **Crash recovery** — a ticket stranded in `processing` past the timeout is reset to `pending` and re-enqueued; a healthy in-flight ticket is left untouched.
 * Transient vs. permanent classification driven through the **real Faraday middleware** (429/5xx/timeout → transient; 400/401/403 → permanent).
 * Permanent failures do not retry; transient failures re-raise for Sidekiq.
 * Malformed JSON, model refusal, empty content, and missing/blank required fields are all rejected (never persisted).
@@ -127,7 +132,7 @@ The suite is layered: model validations, API integration tests, service HTTP-con
 
 ## 6. Limitations & Trade-offs
 
-1. **Stuck `processing` on worker crash.** A ticket claimed and then abandoned (worker killed mid-flight) remains `processing` and is skipped by future claims. There is no lease/heartbeat reclaim yet.
+1. **Crash recovery is a coarse visibility timeout.** A ticket abandoned in `processing` is reclaimed by `ReclaimStaleTicketsJob` only after `CLAIM_TIMEOUT` (default 5 min), so recovery is not immediate. It is also unfenced: the completion write is not guarded by `claimed_at`, so a worker that was merely hung (not dead) and revives after its ticket was reclaimed could still write its result. A `claimed_at` fencing token on the completion write, and a shorter lease/heartbeat, are future work.
 2. **Permanent failures are not placed in Sidekiq's Dead Set.** They are recorded on the ticket (`failed` + `error_message`) and swallowed by design — the ticket row, not Sidekiq, is the failure source of truth.
 3. **Single shared auth token.** Not per-client; no rotation.
 4. **Retry exhaustion is verified at the config + job-contract level**, not via a live Sidekiq/Redis integration test.
@@ -139,5 +144,5 @@ The suite is layered: model validations, API integration tests, service HTTP-con
 
 1. **Per-client authentication**: issue and rotate a distinct API key per client.
 2. **Webhooks**: dispatch a callback when a ticket reaches `completed` or `failed`.
-3. **Stuck-worker recovery**: a lease/heartbeat with a reclaim window (addresses Limitation 1).
+3. **Fenced, faster crash recovery**: a `claimed_at` fencing token on the completion write plus a lease/heartbeat to shorten the reclaim window below `CLAIM_TIMEOUT` (tightens Limitation 1; the reclaim reaper itself already ships).
 4. **LLM provider fallback**: fail over to an alternate provider on sustained OpenAI errors.
