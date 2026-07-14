@@ -61,6 +61,39 @@ class Api::V1::TicketsTest < ActionDispatch::IntegrationTest
     assert_equal "Ticket already exists.", body["message"]
   end
 
+  test "should return the existing ticket with 200 when a concurrent insert wins the race" do
+    external_id = "ext-rescue-1"
+    existing = Ticket.create!(customer_email: "race@example.com", body: "first", external_id: external_id)
+
+    # Make only the controller's pre-check miss (the first find_by call) so the
+    # request reaches save() and the unique index raises RecordNotUnique --
+    # exactly what losing the race looks like. Later lookups (the rescue's
+    # find_by!) delegate to the real finder and see the existing row. The rescue
+    # must return that ticket with 200, not 500 and not a duplicate.
+    original_find_by = Ticket.method(:find_by)
+    calls = 0
+    Ticket.define_singleton_method(:find_by) do |*args, **kwargs|
+      calls += 1
+      calls == 1 ? nil : original_find_by.call(*args, **kwargs)
+    end
+    begin
+      assert_no_difference -> { Ticket.count } do
+        assert_no_enqueued_jobs only: TicketTriageJob do
+          post api_v1_tickets_path, params: {
+            ticket: { customer_email: "race@example.com", body: "second", external_id: external_id }
+          }, headers: auth_headers, as: :json
+        end
+      end
+    ensure
+      Ticket.singleton_class.send(:remove_method, :find_by)
+    end
+
+    assert_response :ok
+    body = JSON.parse(response.body)
+    assert_equal existing.id, body["ticket_id"]
+    assert_equal "Ticket already exists.", body["message"]
+  end
+
   test "should allow multiple tickets without an external_id" do
     2.times do |i|
       post api_v1_tickets_path, params: {
