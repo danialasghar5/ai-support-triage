@@ -10,6 +10,11 @@ class Ticket < ApplicationRecord
     failed: "failed"
   }, default: "pending"
 
+  # Tickets a worker is allowed to claim: never yet run, or run and failed
+  # (a retry re-claims). completed and processing are deliberately excluded --
+  # the claim guards against re-running or double-claiming those.
+  scope :claimable, -> { where(status: [ statuses[:pending], statuses[:failed] ]) }
+
   validates :customer_email, presence: true, format: { with: URI::MailTo::EMAIL_REGEXP }
   validates :body, presence: true
   validates :status, presence: true

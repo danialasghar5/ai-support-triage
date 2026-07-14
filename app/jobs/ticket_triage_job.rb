@@ -67,7 +67,10 @@ class TicketTriageJob < ApplicationJob
     ticket.with_lock do
       return false if ticket.completed? || ticket.processing?
 
-      ticket.update!(status: :processing, error_message: nil)
+      # Stamp claimed_at so the reaper (ReclaimStaleTicketsJob) can distinguish a
+      # ticket that is legitimately running from one abandoned by a crashed
+      # worker and stranded in processing.
+      ticket.update!(status: :processing, error_message: nil, claimed_at: Time.current)
       true
     end
   end
